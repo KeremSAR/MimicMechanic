@@ -1,0 +1,239 @@
+using System.Collections;
+using System.Collections.Generic;
+using Game.Core;
+using UnityEngine;
+
+namespace MimicSpace
+{
+    public class Mimic : MonoBehaviour, IPolyCounterPart
+    {
+        [Header("Animation")]
+        public GameObject legPrefab;
+
+        [Range(2, 20)]
+        public float numberOfLegs = 5;
+        [Tooltip("The number of splines per leg")]
+        [Range(1, 10)]
+        public float partsPerLeg = 4;
+        float maxLegs;
+
+        public int legCount;
+        public int deployedLegs;
+        [Range(0, 19)]
+        public int minimumAnchoredLegs = 2;
+        public float minimumAnchoredParts;
+
+        [Tooltip("Minimum duration before leg is replaced")]
+        public float minLegLifetime = 5;
+        [Tooltip("Maximum duration before leg is replaced")]
+        public float maxLegLifetime = 15;
+
+        public Vector3 legPlacerOrigin = Vector3.zero;
+        [Tooltip("Leg placement radius offset")]
+        public float newLegRadius = 3;
+
+        public float minLegDistance = 4.5f;
+        public float maxLegDistance = 6.3f;
+
+        [Range(2, 50)]
+        [Tooltip("Number of spline samples per legpart")]
+        public int legResolution = 40;
+
+        [Tooltip("Minimum lerp coeficient for leg growth smoothing")]
+        public float minGrowCoef = 4.5f;
+        [Tooltip("MAximum lerp coeficient for leg growth smoothing")]
+        public float maxGrowCoef = 6.5f;
+
+        [Tooltip("Minimum duration before a new leg can be placed")]
+        public float newLegCooldown = 0.3f;
+
+        bool canCreateLeg = true;
+
+        public List<GameObject> availableLegPool = new List<GameObject>();
+
+        [Tooltip("This must be updates as the Mimin moves to assure great leg placement")]
+        public Vector3 velocity;
+
+        public bool killLegs;   // kill legs true olunca mimic ayakları içine çekiliyor
+        private MimicStats _mimicStats;
+        private float _maxLevel = 5f;
+        public List<GameObject> newLegss = new List<GameObject>();
+        private GameObject sphere;
+        
+        void Start()
+        {
+            ResetMimic();
+            _mimicStats = GetComponent<MimicStats>();
+            sphere = gameObject.transform.GetChild(0).gameObject;
+        }
+
+        private void OnValidate()
+        {
+            //ResetMimic();
+        }
+
+        public void ResetMimic()
+        {
+            foreach (Leg g in GameObject.FindObjectsOfType<Leg>())
+            {
+                Destroy(g.gameObject);
+            }
+            legCount = 0;
+            deployedLegs = 0;
+
+            maxLegs = numberOfLegs * partsPerLeg;
+            float rot = 360f / maxLegs;
+            Vector2 randV = Random.insideUnitCircle;
+            velocity = new Vector3(randV.x, 0, randV.y);
+            minimumAnchoredParts = minimumAnchoredLegs * partsPerLeg;
+            maxLegDistance = newLegRadius * 2.1f;
+
+        }
+        
+        public void ResetMimic2()
+        {
+            
+            
+            legCount = 0;
+            deployedLegs = 0;
+
+            maxLegs = numberOfLegs * partsPerLeg;
+            float rot = 360f / maxLegs;
+            Vector2 randV = Random.insideUnitCircle;
+            velocity = new Vector3(randV.x, 0, randV.y);
+            minimumAnchoredParts = minimumAnchoredLegs * partsPerLeg;
+            maxLegDistance = newLegRadius * 2.1f;
+
+        }
+        
+        
+
+        IEnumerator NewLegCooldown()
+        {
+            canCreateLeg = false;
+            yield return new WaitForSeconds(newLegCooldown);
+            canCreateLeg = true;
+        }
+
+        // Update is called once per frame
+        void Update()
+        {
+            if (!canCreateLeg)
+                return;
+
+            // New leg origin is placed in front of the mimic
+            legPlacerOrigin = transform.position + velocity.normalized * newLegRadius;
+
+            if (legCount <= maxLegs - partsPerLeg)
+            {
+                // Offset The leg origin by a random vector
+                Vector2 offset = Random.insideUnitCircle * newLegRadius;
+                Vector3 newLegPosition = legPlacerOrigin + new Vector3(offset.x, 0, offset.y);
+
+                // If the mimic is moving and the new leg position is behind it, mirror it to make
+                // it reach in front of the mimic.
+                if (velocity.magnitude > 1f)
+                {
+                    float newLegAngle = Vector3.Angle(velocity, newLegPosition - transform.position);
+
+                    if (Mathf.Abs(newLegAngle) > 90)
+                    {
+                        newLegPosition = transform.position - (newLegPosition - transform.position);
+                    }
+                }
+
+                if (Vector3.Distance(new Vector3(transform.position.x, 0, transform.position.z), new Vector3(legPlacerOrigin.x, 0, legPlacerOrigin.z)) < minLegDistance)
+                    newLegPosition = ((newLegPosition - transform.position).normalized * minLegDistance) + transform.position;
+
+                // if the angle is too big, adjust the new leg position towards the velocity vector
+                if (Vector3.Angle(velocity, newLegPosition - transform.position) > 45)
+                    newLegPosition = transform.position + ((newLegPosition - transform.position) + velocity.normalized * (newLegPosition - transform.position).magnitude) / 2f;
+
+                RaycastHit hit;
+                Physics.Raycast(newLegPosition + Vector3.up * 10f, -Vector3.up, out hit);
+                Vector3 myHit = hit.point;
+                // physics linecast like raycast but sets end point.
+                if (Physics.Linecast(transform.position, hit.point, out hit))
+                    myHit = hit.point;
+
+                float lifeTime = Random.Range(minLegLifetime, maxLegLifetime);
+
+                StartCoroutine("NewLegCooldown");
+                for (int i = 0; i < partsPerLeg; i++)
+                {
+                    RequestLeg(myHit, legResolution, maxLegDistance, Random.Range(minGrowCoef, maxGrowCoef), this, lifeTime);
+                    if (legCount >= maxLegs)
+                        return;
+                }
+            }
+        }
+
+        // object pooling to limit leg instantiation
+        void RequestLeg(Vector3 footPosition, int legResolution, float maxLegDistance, float growCoef, Mimic myMimic, float lifeTime)
+        {
+            GameObject newLeg;
+            if (availableLegPool.Count > 0)
+            {
+                newLeg = availableLegPool[availableLegPool.Count - 1];
+                availableLegPool.RemoveAt(availableLegPool.Count - 1);
+            }
+            else
+            {
+                /*if (newLegss.Count >= 30)
+                    return;*/
+                
+                newLeg = Instantiate(legPrefab, transform.position, Quaternion.identity);
+                newLegss.Add(newLeg);
+            }
+            newLeg.SetActive(true);
+            newLeg.GetComponent<Leg>().Initialize(footPosition, legResolution, maxLegDistance, growCoef, myMimic, lifeTime);
+            newLeg.transform.SetParent(myMimic.transform);
+        }
+
+        public void RecycleLeg(GameObject leg)
+        {
+            availableLegPool.Add(leg);
+            leg.SetActive(false);
+        }
+
+        public void GrowMimicLegs()     // // mimic bacaklarını dışarı çıkartır
+        {
+            killLegs = false;
+           // this.GetComponent<Movement>().enabled = true; // movement scripti mimic scriptiyle aynı değilse değişmeli
+
+        }
+
+        public void SuckMimicLegs()  // mimic bacaklarını içeri çeker
+        {
+            killLegs = true;
+           // this.GetComponent<Movement>().enabled = false;     // movement scripti mimic scriptiyle aynı değilse değişmeli
+            
+        }
+
+        public void UpdateStats()
+        {
+            float level = _mimicStats.GetLevel();
+            if (level < 2.5f)
+            {
+                numberOfLegs += 0.15f;
+                partsPerLeg += 0.15f;
+                newLegRadius += 0.1f;
+                minLegDistance += 0.1f;
+                sphere.transform.localScale += new Vector3(0.01f,0.01f,0.01f);
+                foreach (var legs in newLegss)
+                {
+                    LineRenderer lineRenderer = legs.GetComponent<LineRenderer>();
+                    lineRenderer.widthMultiplier += 0.05f;
+                    /*legs.GetComponent<Leg>().legMinHeight += 0.025f;
+                    legs.GetComponent<Leg>().legMaxHeight += 0.15f;
+                    legs.GetComponent<Leg>().minRotSpeed += 1f;
+                    legs.GetComponent<Leg>().maxRotSpeed += 10f;
+                    legs.GetComponent<Leg>().minOscillationSpeed += 1f;
+                    legs.GetComponent<Leg>().maxOscillationSpeed += 6.5f;*/
+                }
+            }
+        }
+
+    }
+
+}
